@@ -1,5 +1,5 @@
 """
-Harmonoid Wrapped — Local stats server
+Echoes — Local stats server
 Run: python server.py
 Then open: http://localhost:8765
 """
@@ -15,10 +15,8 @@ import hashlib
 from pathlib import Path
 from datetime import datetime, timedelta
 
-DB_PATH      = Path(__file__).parent / "harmonoid_stats.db"
-NOW_PATH     = Path(__file__).parent / "now_playing.json"
-ARTWORK_DIR  = Path(__file__).parent / "artwork_cache"
-PORT         = 8765
+import config
+from config import DB_PATH, NOW_PATH, ARTWORK_DIR, PORT, APP_NAME
 
 ARTWORK_DIR.mkdir(exist_ok=True)
 
@@ -32,7 +30,7 @@ def fetch_artwork_url(artist, title=""):
             "limit": 1
         })
         url = f"https://itunes.apple.com/search?{params}"
-        req = urllib.request.Request(url, headers={"User-Agent": "HarmonoidWrapped/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "Echoes/1.0"})
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode())
         results = data.get("results", [])
@@ -41,7 +39,7 @@ def fetch_artwork_url(artist, title=""):
             if title:
                 params2 = urllib.parse.urlencode({"term": artist, "media": "music", "limit": 1})
                 url2 = f"https://itunes.apple.com/search?{params2}"
-                req2 = urllib.request.Request(url2, headers={"User-Agent": "HarmonoidWrapped/1.0"})
+                req2 = urllib.request.Request(url2, headers={"User-Agent": "Echoes/1.0"})
                 with urllib.request.urlopen(req2, timeout=5) as resp2:
                     data2 = json.loads(resp2.read().decode())
                 results = data2.get("results", [])
@@ -72,7 +70,7 @@ def get_cached_artwork(artist, title=""):
         return None
 
     try:
-        req = urllib.request.Request(art_url, headers={"User-Agent": "HarmonoidWrapped/1.0"})
+        req = urllib.request.Request(art_url, headers={"User-Agent": "Echoes/1.0"})
         with urllib.request.urlopen(req, timeout=6) as resp:
             cache_file.write_bytes(resp.read())
         url_file.write_text(art_url)
@@ -80,6 +78,27 @@ def get_cached_artwork(artist, title=""):
     except Exception:
         return None
 
+
+
+_last_good_np = {"playing": False}
+
+def read_now_playing():
+    """Return the last valid now-playing state. A torn/empty read or a stale
+    file never produces a blank frame - we keep the previous good value."""
+    global _last_good_np
+    try:
+        d = json.loads(NOW_PATH.read_text(encoding="utf-8"))
+        if isinstance(d, dict) and "playing" in d:
+            try:
+                age = (datetime.now() - datetime.fromisoformat(d["updated_at"])).total_seconds()
+                if age > 15:            # tracker not running / frozen
+                    d["playing"] = False
+            except Exception:
+                pass
+            _last_good_np = d
+    except Exception:
+        pass
+    return _last_good_np
 
 def query_stats():
     if not DB_PATH.exists():
@@ -323,17 +342,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
         elif self.path == "/now-playing":
-            if NOW_PATH.exists():
-                try:
-                    payload = NOW_PATH.read_text()
-                except Exception:
-                    payload = json.dumps({"playing": False})
-            else:
-                payload = json.dumps({"playing": False})
-            data = payload.encode()
+            data = json.dumps(read_now_playing()).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", len(data))
             self.end_headers()
             self.wfile.write(data)
@@ -341,7 +354,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # Serve mobile PWA
             mobile_path = Path(__file__).parent / "mobile.html"
             if mobile_path.exists():
-                data = mobile_path.read_bytes()
+                data = mobile_path.read_text(encoding="utf-8").replace("{{APP_NAME}}", APP_NAME).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html")
                 self.send_header("Access-Control-Allow-Origin", "*")
@@ -375,8 +388,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
         else:
-            self.path = "/dashboard.html"
-            super().do_GET()
+            page = Path(__file__).parent / "dashboard.html"
+            data = page.read_text(encoding="utf-8").replace("{{APP_NAME}}", APP_NAME).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", len(data))
+            self.end_headers()
+            self.wfile.write(data)
 
     def log_message(self, *args):
         pass
@@ -412,12 +430,18 @@ def main():
     except:
         local_ip = "localhost"
 
-    print(f"[SERVER] Harmonoid Wrapped running")
+    print(f"[SERVER] {APP_NAME} running")
     print(f"[SERVER] Desktop : http://localhost:{PORT}")
     print(f"[SERVER] Phone   : http://{local_ip}:{PORT}/mobile")
     print(f"[SERVER] Press Ctrl+C to stop.\n")
     # Bind to 0.0.0.0 so phone on same WiFi can reach it
-    with socketserver.TCPServer(("0.0.0.0", PORT), Handler) as httpd:
+    config.migrate_legacy_db()
+    config.ensure_schema()
+    # Threaded so a slow artwork/lyrics lookup can never stall /now-playing
+    class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+    with Server(("0.0.0.0", PORT), Handler) as httpd:
         httpd.serve_forever()
 
 if __name__ == "__main__":

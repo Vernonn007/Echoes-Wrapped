@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Harmonoid Wrapped</title>
+<title>Echoes Wrapped</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400;1,500&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
@@ -252,7 +252,7 @@ a{color:rgba(201,169,110,.7)}
 <nav>
   <div class="nav-brand">
     <div class="nav-logo">🎵</div>
-    Harmonoid <em style="font-family:var(--serif);font-style:italic;font-weight:300;color:var(--gold2);margin-left:4px">Wrapped</em>
+    Echoes <em style="font-family:var(--serif);font-style:italic;font-weight:300;color:var(--gold2);margin-left:4px">Wrapped</em>
   </div>
   <div class="nav-tabs">
     <button class="nav-tab active" onclick="showPage('dashboard',this)">Dashboard</button>
@@ -266,7 +266,7 @@ a{color:rgba(201,169,110,.7)}
 <div class="page active" id="page-dashboard">
   <div class="hero">
     <div class="hero-eye">Your listening story</div>
-    <div class="hero-title">Harmonoid <em>Wrapped</em></div>
+    <div class="hero-title">Echoes <em>Wrapped</em></div>
     <div class="hero-sub">Every track you loved, every hour you listened.</div>
   </div>
   <div id="dash-content"><div class="loading">Loading your stats…</div></div>
@@ -378,42 +378,65 @@ a{color:rgba(201,169,110,.7)}
 
 // ── COLOR EXTRACTION ──────────────────────────────────────────────
 let lastArtKey='';
-function extractAndApply(src){
+// Pulls a vivid palette from an image: scores colours by how common AND how saturated
+// they are, so muddy greys/browns don't win over the cover's actual accent colours.
+function getPalette(src,count){
+  return new Promise(res=>{
+    const img=new Image(); img.crossOrigin='anonymous';
+    img.onload=()=>{
+      try{
+        const S=32, c=document.createElement('canvas'); c.width=S; c.height=S;
+        const cx=c.getContext('2d'); cx.drawImage(img,0,0,S,S);
+        const d=cx.getImageData(0,0,S,S).data, buckets={};
+        for(let i=0;i<d.length;i+=4){
+          if(d[i+3]<120) continue;
+          const r=(d[i]>>4)<<4, g=(d[i+1]>>4)<<4, b=(d[i+2]>>4)<<4;
+          const k=r+','+g+','+b;
+          (buckets[k]=buckets[k]||{r,g,b,n:0}).n++;
+        }
+        const scored=Object.values(buckets).map(o=>{
+          const mx=Math.max(o.r,o.g,o.b), mn=Math.min(o.r,o.g,o.b);
+          const sat=mx?(mx-mn)/mx:0, lum=(0.2126*o.r+0.7152*o.g+0.0722*o.b)/255;
+          const ok=mx>40 && lum<0.92 && sat>0.12;
+          return {...o, score: ok ? o.n*(0.25+sat*1.6)*(lum<0.15?0.4:1) : 0};
+        }).filter(o=>o.score>0).sort((a,b)=>b.score-a.score);
+        const picked=[];
+        for(const col of scored){
+          if(picked.length>=count) break;
+          if(!picked.some(p=>Math.abs(p.r-col.r)+Math.abs(p.g-col.g)+Math.abs(p.b-col.b)<90)) picked.push(col);
+        }
+        res(picked.map(({r,g,b})=>[r,g,b]));
+      }catch(e){ res([]); }
+    };
+    img.onerror=()=>res([]);
+    img.src=src;
+  });
+}
+function boost([r,g,b]){
+  // lift dark colours, cap bright ones so the background stays calm
+  const k=Math.max(r,g,b)<110 ? 1.7 : 1.25;
+  return [r,g,b].map(v=>Math.min(215,Math.round(v*k+10)));
+}
+function applyPalette(cols){
+  const out=cols.slice(0,5).map(boost);
+  const fallback=[[90,55,20],[40,30,70],[25,50,65],[70,35,15],[55,25,60]];
+  // fill any missing slots by re-using the cover's own colours (dimmer), not a fixed purple
+  let i=0; while(out.length<5){ out.push(out.length&&cols.length?out[i++%Math.max(1,out.length)].map(v=>Math.round(v*.7)):fallback[out.length]); }
+  window.setAmbientColors(out);
+}
+async function extractAndApply(src){
   if(!src||src===lastArtKey) return;
   lastArtKey=src;
-  const img=new Image(); img.crossOrigin='anonymous';
-  img.onload=()=>{
-    const c=document.createElement('canvas'); c.width=20; c.height=20;
-    const cx=c.getContext('2d'); cx.drawImage(img,0,0,20,20);
-    const d=cx.getImageData(0,0,20,20).data;
-    const buckets={};
-    for(let i=0;i<d.length;i+=4){
-      if(d[i+3]<120) continue;
-      const r=(d[i]>>3)<<3, g=(d[i+1]>>3)<<3, b=(d[i+2]>>3)<<3;
-      const k=`${r},${g},${b}`;
-      if(!buckets[k]) buckets[k]={r,g,b,n:0};
-      buckets[k].n++;
-    }
-    const sorted=Object.values(buckets)
-      .filter(({r,g,b})=>{const mx=Math.max(r,g,b),mn=Math.min(r,g,b);return mx>18&&mn<230&&mx-mn>20;})
-      .sort((a,b)=>b.n-a.n);
-    const picked=[];
-    for(const col of sorted){
-      if(picked.length>=5) break;
-      const near=picked.some(p=>Math.abs(p.r-col.r)+Math.abs(p.g-col.g)+Math.abs(p.b-col.b)<55);
-      if(!near) picked.push(col);
-    }
-    while(picked.length<5) picked.push({r:35,g:25,b:55});
-    // Boost brightness significantly so it shows through the dark bg
-    const bright=picked.map(({r,g,b})=>[
-      Math.min(220,Math.round(r*1.3+12)),
-      Math.min(220,Math.round(g*1.3+12)),
-      Math.min(220,Math.round(b*1.3+12)),
-    ]);
-    window.setAmbientColors(bright);
-  };
-  img.onerror=()=>{};
-  img.src=src;
+  const cols=await getPalette(src,5);
+  if(cols.length) applyPalette(cols); else lastArtKey='';
+}
+// Idle: blend colours from your top 3 played tracks
+async function seedFromTop(s){
+  const tops=(s.top_tracks||[]).slice(0,3);
+  if(!tops.length) return;
+  const lists=await Promise.all(tops.map(t=>getPalette(artUrl(t.artist,t.title),2)));
+  const mixed=[]; for(let k=0;k<2;k++) lists.forEach(l=>{ if(l[k]) mixed.push(l[k]); });
+  if(mixed.length && lastArtKey==='') applyPalette(mixed);
 }
 
 // ── UTILS ─────────────────────────────────────────────────────────
@@ -526,8 +549,7 @@ function renderDash(){
       scales:{x:{grid:{color:G.grid},ticks:G.tick},y:{grid:{color:G.grid},ticks:G.tick}}}
   });
   // Seed ambient from top track if nothing playing
-  if(s.top_tracks.length && lastArtKey==='')
-    extractAndApply(artUrl(s.top_tracks[0].artist, s.top_tracks[0].title));
+  if(s.top_tracks.length && lastArtKey==='' && !window._seeded){ window._seeded=true; seedFromTop(s); }
 }
 
 function renderList(id, items, isArtist){
@@ -683,16 +705,19 @@ async function loadNowPlaying(){
     const eq=document.getElementById('np-eq');
     if(!status) return;
     let dT='—',dA='—';
-    if(np?.playing&&np.title){
+    // Title stays stable while paused; only the status label changes.
+    const hasTrack=!!(np&&np.title);
+    if(hasTrack){ dT=np.title; dA=np.artist||''; }
+    else if(np&&np.last_title){ dT=np.last_title; dA=np.last_artist||''; }
+    if(np?.playing&&hasTrack){
       status.innerHTML='Now playing <span class="live-dot"></span>';
-      dT=np.title; dA=np.artist||'';
-      track.textContent=dT; artistEl.textContent=dA; eq.style.display='flex';
+      eq.style.display='flex';
     } else {
       status.innerHTML='Not playing <span class="live-dot" style="background:rgba(255,255,255,0.2);animation:none"></span>';
-      dT=np?.last_title||'—'; dA=np?.last_artist||'—';
-      track.textContent=dT+(np?.last_title?' · last played':'');
-      artistEl.textContent=dA; eq.style.display='none';
+      eq.style.display='none';
     }
+    if(dT==='—'&&lastNpKey) return;   // ignore blank blips, keep what's on screen
+    track.textContent=dT; artistEl.textContent=dA;
     const key=dT+'::'+dA;
     const newSrc=artUrl(dA,dT);
 

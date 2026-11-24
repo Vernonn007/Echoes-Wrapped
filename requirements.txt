@@ -1,1 +1,4 @@
-winsdk>=1.0.0b10
+winrt-runtime
+winrt-Windows.Media.Control
+winrt-Windows.Foundation
+winrt-Windows.Foundation.Collections

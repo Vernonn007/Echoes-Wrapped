@@ -1,206 +1,194 @@
 """
-Harmonoid Wrapped — Windows SMTC Tracker (winrt edition)
-Install: pip install winrt-runtime winrt-Windows.Media.Control winrt-Windows.Foundation
-Run:     python tracker.py
+Echoes - Windows SMTC tracker (WaveFlow + Harmonoid)
+Install: pip install -r requirements.txt
+Run:     python tracker.py            (normal)
+         python tracker.py --discover (print every media app Windows can see)
 """
-
 import asyncio
+import ctypes
 import sqlite3
 import sys
 from datetime import datetime
-from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "harmonoid_stats.db"
-NOW_PATH = Path(__file__).parent / "now_playing.json"
-POLL_INTERVAL = 3
+import config
+from config import DB_PATH, NOW_PATH, APP_NAME, PLAYER_MATCHES
+
+POLL_INTERVAL    = 2      # seconds
 MIN_PLAY_SECONDS = 10
+GRACE_POLLS      = 3      # polls a vanished/odd state is tolerated before we call it "stopped"
 
-def write_now_playing(playing, title=None, artist=None, last_title=None, last_artist=None, position_s=0, duration_s=0):
-    import json
-    data = {
-        "playing": playing,
-        "title": title,
-        "artist": artist,
-        "last_title": last_title,
-        "last_artist": last_artist,
-        "position_s": round(position_s, 1),
-        "duration_s": round(duration_s, 1),
-        "updated_at": datetime.now().isoformat(),
-    }
+
+def single_instance():
+    """Stop a second tracker from fighting the first one over the DB and now_playing.json."""
     try:
-        with open(NOW_PATH, "w") as f:
-            json.dump(data, f)
-    except Exception:
-        pass
+        h = ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\EchoesTrackerMutex")
+        if ctypes.windll.kernel32.GetLastError() == 183:   # ERROR_ALREADY_EXISTS
+            print("[TRACKER] Another tracker is already running - exiting.")
+            sys.exit(0)
+        return h
+    except AttributeError:
+        return None   # not Windows
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS plays (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            title      TEXT NOT NULL,
-            artist     TEXT,
-            album      TEXT,
-            started_at TEXT NOT NULL,
-            ended_at   TEXT,
-            duration_s INTEGER DEFAULT 0,
-            source     TEXT DEFAULT 'harmonoid'
-        )
-    """)
-    conn.commit()
-    conn.close()
-    print(f"[DB] Ready at {DB_PATH}")
 
-def save_play(title, artist, album, started_at, ended_at, duration_s):
+def save_play(title, artist, album, started_at, ended_at, duration_s, source):
     if duration_s < MIN_PLAY_SECONDS:
         return
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
-        "INSERT INTO plays (title,artist,album,started_at,ended_at,duration_s) VALUES (?,?,?,?,?,?)",
-        (title, artist, album,
-         started_at.isoformat(), ended_at.isoformat(), int(duration_s))
-    )
-    conn.commit()
-    conn.close()
-    mins, secs = divmod(int(duration_s), 60)
-    print(f"[LOG] {artist} — {title}  ({mins}m {secs}s)")
+        "INSERT INTO plays (title,artist,album,started_at,ended_at,duration_s,source) VALUES (?,?,?,?,?,?,?)",
+        (title, artist, album, started_at.isoformat(), ended_at.isoformat(), int(duration_s), source))
+    conn.commit(); conn.close()
+    m, s = divmod(int(duration_s), 60)
+    print(f"[LOG] {artist} - {title}  ({m}m {s}s) [{source}]")
 
-async def run_tracker():
+
+def player_name(app_id):
+    a = (app_id or "").lower()
+    for m in PLAYER_MATCHES:
+        if m in a:
+            return m
+    return None
+
+
+def secs(v):
+    if v is None: return 0.0
+    try: return float(v.total_seconds())
+    except Exception:
+        try: return float(v) / 1e7
+        except Exception: return 0.0
+
+
+async def run(discover=False):
     try:
         from winrt.windows.media.control import \
             GlobalSystemMediaTransportControlsSessionManager as SessionManager
         from winrt.windows.media.control import \
-            GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus
+            GlobalSystemMediaTransportControlsSessionPlaybackStatus as PS
     except ImportError:
-        print("[ERROR] winrt packages not found.")
-        print("  Run: pip install winrt-runtime winrt-Windows.Media.Control winrt-Windows.Foundation")
+        print("[ERROR] winrt packages missing. Run: pip install -r requirements.txt")
         sys.exit(1)
-
-    print("[TRACKER] Harmonoid Wrapped is running.")
-    print(f"[TRACKER] Polling every {POLL_INTERVAL}s — play something in Harmonoid!")
-    print("[TRACKER] Press Ctrl+C to stop.\n")
 
     manager = await SessionManager.request_async()
 
-    current_title  = None
-    current_artist = None
-    current_album  = None
-    play_start     = None
-    last_title     = None
-    last_artist    = None
+    if discover:
+        print("[DISCOVER] Play something in WaveFlow, then watch this list. Ctrl+C to stop.\n")
+        seen = set()
+        while True:
+            for s in manager.get_sessions():
+                aid = s.source_app_user_model_id
+                try:
+                    info = await s.try_get_media_properties_async()
+                    t = f"{info.artist} - {info.title}"
+                except Exception:
+                    t = "?"
+                line = f"{aid}  |  {t}"
+                if line not in seen:
+                    seen.add(line); print("[APP]", line)
+            await asyncio.sleep(2)
+
+    print(f"[TRACKER] {APP_NAME} running - watching: {', '.join(PLAYER_MATCHES)}")
+    print("[TRACKER] Ctrl+C to stop.\n")
+
+    cur = None            # dict of the play in progress: title, artist, album, start, source
+    last = {"title": None, "artist": None}
+    shown = {}            # last good display payload (kept while paused / during blips)
+    miss = 0
+
+    def finish(reason=""):
+        nonlocal cur
+        if cur:
+            el = (datetime.now() - cur["start"]).total_seconds()
+            save_play(cur["title"], cur["artist"], cur["album"], cur["start"], datetime.now(), el, cur["source"])
+            last["title"], last["artist"] = cur["title"], cur["artist"]
+        cur = None
+
+    def publish(playing):
+        d = dict(shown) if shown else {}
+        d.update({
+            "playing": bool(playing),
+            "last_title": last["title"], "last_artist": last["artist"],
+            "updated_at": datetime.now().isoformat(),
+        })
+        config.write_json_atomic(NOW_PATH, d)
 
     while True:
         try:
-            sessions = manager.get_sessions()
-            session  = None
-
+            sessions = [s for s in manager.get_sessions() if player_name(s.source_app_user_model_id)]
+            # prefer a session that is actually playing
+            chosen = None
             for s in sessions:
-                src = (s.source_app_user_model_id or "").lower()
-                if "harmonoid" in src:
-                    session = s
-                    break
+                pi = s.get_playback_info()
+                if pi and pi.playback_status == PS.PLAYING:
+                    chosen = s; break
+            if chosen is None and sessions:
+                chosen = sessions[0]
 
-            if session is None:
-                write_now_playing(False, last_title=last_title, last_artist=last_artist)
+            info = None
+            if chosen is not None:
+                try: info = await chosen.try_get_media_properties_async()
+                except Exception: info = None
+
+            title = (info.title if info else "") or ""
+            if chosen is None or info is None or not title:
+                # Session vanished or metadata momentarily empty: do NOT flip state yet.
+                miss += 1
+                if miss >= GRACE_POLLS:
+                    finish()
+                    publish(False)
+                elif shown:
+                    publish(shown.get("playing", False))   # keep showing what we had
                 await asyncio.sleep(POLL_INTERVAL)
                 continue
+            miss = 0
 
-            info   = await session.try_get_media_properties_async()
-            status = session.get_playback_info()
-
-            if info is None:
-                write_now_playing(False, last_title=last_title, last_artist=last_artist)
-                await asyncio.sleep(POLL_INTERVAL)
-                continue
-
-            title  = info.title       or "Unknown"
-            artist = info.artist      or "Unknown Artist"
+            artist = info.artist or "Unknown Artist"
             album  = info.album_title or ""
+            src    = player_name(chosen.source_app_user_model_id)
+            pi     = chosen.get_playback_info()
+            playing = bool(pi and pi.playback_status == PS.PLAYING)
 
-            playing = (
-                status is not None and
-                status.playback_status == PlaybackStatus.PLAYING
-            )
-
-            # Get playback position and duration from timeline
-            position_s = 0.0
-            duration_s = 0.0
+            pos = dur = 0.0
             try:
-                tl = session.get_timeline_properties()
+                tl = chosen.get_timeline_properties()
                 if tl:
-                    # Try position
-                    for attr in ('position', 'start_time', 'min_seek_time'):
-                        v = getattr(tl, attr, None)
-                        if v is not None:
-                            try: position_s = v.total_seconds(); break
-                            except:
-                                try: position_s = float(v)/1e7; break
-                                except: pass
-                    # Try duration/end
-                    for attr in ('end_time', 'max_seek_time', 'duration'):
-                        v = getattr(tl, attr, None)
-                        if v is not None:
-                            try:
-                                duration_s = v.total_seconds()
-                                if duration_s > 0: break
-                            except:
-                                try:
-                                    duration_s = float(v)/1e7
-                                    if duration_s > 0: break
-                                except: pass
-                    # Debug: print attrs if still no duration
-                    if duration_s == 0:
-                        attrs = [a for a in dir(tl) if not a.startswith('_')]
-                        print(f"[DEBUG] Timeline attrs: {attrs}")
-                        for a in attrs:
-                            try: print(f"[DEBUG]   {a} = {getattr(tl,a)}")
-                            except: pass
-            except Exception as e:
-                print(f"[DEBUG] Timeline error: {e}")
+                    pos = secs(getattr(tl, "position", None))
+                    dur = secs(getattr(tl, "end_time", None)) - secs(getattr(tl, "start_time", None))
+                    if dur <= 0: dur = secs(getattr(tl, "max_seek_time", None))
+                    if dur < 0 or dur > 6 * 3600: dur = 0.0
+            except Exception:
+                pass
 
-            # Track changed — save previous
-            if (title != current_title or artist != current_artist) and current_title:
-                if play_start:
-                    elapsed = (datetime.now() - play_start).total_seconds()
-                    save_play(current_title, current_artist, current_album,
-                              play_start, datetime.now(), elapsed)
-                    last_title, last_artist = current_title, current_artist
-                current_title = current_artist = current_album = play_start = None
+            # track changed -> close previous play
+            if cur and (cur["title"] != title or cur["artist"] != artist):
+                finish()
+            # paused -> close play so paused time isn't counted
+            if cur and not playing:
+                finish()
+            # started playing a track
+            if playing and not cur:
+                cur = {"title": title, "artist": artist, "album": album,
+                       "start": datetime.now(), "source": src}
+                print(f"[NOW]  {artist} - {title} [{src}]")
 
-            # New track playing
-            if playing and title != current_title:
-                current_title  = title
-                current_artist = artist
-                current_album  = album
-                play_start     = datetime.now()
-                print(f"[NOW]  {artist} — {title}")
-
-            # Paused — save and reset
-            elif not playing and current_title and play_start:
-                elapsed = (datetime.now() - play_start).total_seconds()
-                save_play(current_title, current_artist, current_album,
-                          play_start, datetime.now(), elapsed)
-                last_title, last_artist = current_title, current_artist
-                current_title = current_artist = current_album = play_start = None
-
-            write_now_playing(
-                playing and bool(current_title),
-                title=current_title, artist=current_artist,
-                last_title=last_title, last_artist=last_artist,
-                position_s=position_s, duration_s=duration_s
-            )
-
+            shown = {"title": title, "artist": artist, "album": album, "player": src,
+                     "position_s": round(pos, 1), "duration_s": round(dur, 1)}
+            publish(playing)
         except Exception as e:
             print(f"[WARN] {e}")
-
         await asyncio.sleep(POLL_INTERVAL)
 
+
 def main():
-    init_db()
+    discover = "--discover" in sys.argv
+    if not discover:
+        single_instance()
+    config.migrate_legacy_db()
+    config.ensure_schema()
     try:
-        asyncio.run(run_tracker())
+        asyncio.run(run(discover))
     except KeyboardInterrupt:
-        print("\n[TRACKER] Stopped. Stats saved.")
+        print("\n[TRACKER] Stopped.")
+
 
 if __name__ == "__main__":
     main()

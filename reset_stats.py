@@ -1,12 +1,12 @@
 """
-Harmonoid Wrapped — Reset stats
+Echoes — Reset stats
 Clears all listening history but keeps the database file/structure intact.
 Run: python reset_stats.py
 """
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "harmonoid_stats.db"
+DB_PATH = Path(__file__).parent / "echoes_stats.db"
 
 if not DB_PATH.exists():
     print("No database found — nothing to reset.")

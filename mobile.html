@@ -7,7 +7,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#04040a">
-<title>Harmonoid Remote</title>
+<title>Echoes Remote</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -295,7 +295,7 @@ body{font-family:'Inter',system-ui,sans-serif;color:#fff;position:relative}
 <!-- SETUP SCREEN -->
 <div id="setup">
   <div class="setup-icon">🎵</div>
-  <div class="setup-title">Harmonoid Remote</div>
+  <div class="setup-title">Echoes Remote</div>
   <div class="setup-sub">Enter your PC's local IP address.<br>Both devices must be on the same WiFi.<br>Run <code style="background:rgba(255,255,255,0.08);padding:2px 6px;border-radius:4px;font-size:12px">ipconfig</code> on your PC to find it.</div>
   <input class="setup-input" id="ip-input" type="text" placeholder="192.168.1.x" inputmode="decimal">
   <button class="setup-btn" onclick="connect()">Connect</button>
@@ -304,7 +304,7 @@ body{font-family:'Inter',system-ui,sans-serif;color:#fff;position:relative}
 <!-- MAIN APP -->
 <div id="app" style="display:none">
   <div class="header">
-    <div class="header-brand">Harmonoid <em>Remote</em></div>
+    <div class="header-brand">Echoes <em>Remote</em></div>
     <div style="display:flex;align-items:center;gap:8px">
       <button id="tab-now" onclick="switchTab('player')" style="background:rgba(218,172,76,0.15);border:1px solid rgba(218,172,76,0.35);color:rgba(218,172,76,1);padding:5px 12px;border-radius:20px;font-size:10px;font-weight:500;letter-spacing:.8px;cursor:pointer;transition:all .2s">NOW PLAYING</button>
       <button id="tab-lyrics" onclick="switchTab('lyrics')" style="background:transparent;border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.35);padding:5px 12px;border-radius:20px;font-size:10px;font-weight:500;letter-spacing:.8px;cursor:pointer;transition:all .2s">LYRICS</button>
@@ -366,7 +366,7 @@ body{font-family:'Inter',system-ui,sans-serif;color:#fff;position:relative}
   <div id="lyrics-view" style="display:none;flex:1;overflow-y:auto;min-height:0;position:relative">
     <div id="lyrics-content" style="padding:24px 28px 80px;min-height:100%">
       <div id="lyrics-idle" style="text-align:center;padding:80px 20px;color:rgba(255,255,255,0.2);font-size:14px;font-weight:300;font-style:italic;font-family:'Cormorant Garamond',serif;line-height:1.8">
-        Play something in Harmonoid<br>to see lyrics
+        Play a song<br>to see lyrics
       </div>
     </div>
   </div>
@@ -523,13 +523,13 @@ async function poll(){
     }
 
     playing = np?.playing||false;
-    const title  = np?.playing ? np.title  : (np?.last_title||'Not Playing');
-    const artist = np?.playing ? np.artist : (np?.last_artist||'—');
+    const title  = np?.title || np?.last_title || 'Not Playing';
+    const artist = np?.title ? (np.artist||'') : (np?.last_title ? (np.last_artist||'') : '—');
     const key    = title+'::'+artist;
 
     // Store globally so lyrics tab can access without reading hidden DOM
-    currentTrackTitle  = np?.playing ? (np.title||'')  : (np?.last_title||'');
-    currentTrackArtist = np?.playing ? (np.artist||'') : (np?.last_artist||'');
+    currentTrackTitle  = np?.title || np?.last_title || '';
+    currentTrackArtist = np?.title ? (np.artist||'') : (np?.last_artist||'');
 
     // Update position/duration from server — only if server sends real values
     const serverDur = np?.duration_s||0;

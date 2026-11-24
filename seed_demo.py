@@ -6,7 +6,7 @@ import sqlite3, random
 from datetime import datetime, timedelta
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "harmonoid_stats.db"
+DB_PATH = Path(__file__).parent / "echoes_stats.db"
 
 TRACKS = [
     ("Blinding Lights",     "The Weeknd",        "After Hours"),
@@ -40,7 +40,7 @@ conn.execute("""
         title TEXT NOT NULL, artist TEXT, album TEXT,
         album_art TEXT, started_at TEXT NOT NULL,
         ended_at TEXT, duration_s INTEGER DEFAULT 0,
-        source TEXT DEFAULT 'harmonoid'
+        source TEXT DEFAULT 'waveflow'
     )
 """)
 
